@@ -1,0 +1,26 @@
+name: Feishu notification
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Feishu notification
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+        run: |
+          if [ -z "$FEISHU_WEBHOOK" ]; then
+            echo "FEISHU_WEBHOOK is not configured; skipping notification."
+            exit 0
+          fi
+          payload=$(printf '{"msg_type":"text","content":{"text":"AI Reports 已更新：%s\\n提交：%s"}}' "$REPOSITORY" "$COMMIT_URL")
+          curl --fail-with-body --request POST --header 'Content-Type: application/json' --data "$payload" "$FEISHU_WEBHOOK"
