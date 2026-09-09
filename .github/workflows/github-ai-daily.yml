@@ -1,0 +1,89 @@
+name: Generate GitHub AI hot list
+
+on:
+  schedule:
+    # 每天北京时间 17:00（UTC 09:00）生成日报
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-ai-hot-list
+  cancel-in-progress: false
+
+jobs:
+  generate-and-publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Fetch data and generate report
+        id: report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const path = require("path");
+            const dateFor = (value) => {
+              const parts = new Intl.DateTimeFormat("en-CA", {
+                timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit"
+              }).formatToParts(value);
+              const get = (type) => parts.find((part) => part.type === type).value;
+              return `${get("year")}-${get("month")}-${get("day")}`;
+            };
+            const today = dateFor(new Date());
+            const since = dateFor(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+            const { data } = await github.rest.search.repos({
+              q: `topic:ai pushed:>=${since}`,
+              sort: "stars",
+              order: "desc",
+              per_page: 10,
+            });
+            const escapeHtml = (text = "") => String(text)
+              .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+            const rows = data.items.map((repo, index) => `<tr><td class="rank">${index + 1}</td><td class="repo"><a href="${repo.html_url}">${repo.full_name}</a></td><td class="stars">${repo.stargazers_count.toLocaleString("en-US")}</td><td>${repo.forks_count.toLocaleString("en-US")}</td><td class="desc">${escapeHtml(repo.description || "暂无简介")}</td></tr>`).join("");
+            const style = `:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172033;background:#f6f8fc}body{margin:0}main{max-width:980px;margin:0 auto;padding:48px 24px 72px}a{color:#2563eb}.back{text-decoration:none;font-weight:600}h1{margin:24px 0 8px;font-size:clamp(2rem,6vw,3.4rem);letter-spacing:-.04em}.meta,footer{color:#64748b;line-height:1.7}table{width:100%;border-collapse:collapse;background:#fff;margin-top:28px;border:1px solid #dbe2ef;border-radius:12px;overflow:hidden}th,td{padding:14px;text-align:left;border-bottom:1px solid #e7edf6;vertical-align:top}th{color:#475569;background:#f8fafc;font-size:.85rem}.rank{color:#64748b;width:32px}.repo a{font-weight:700;text-decoration:none}.desc{color:#536076;line-height:1.55;min-width:260px}.stars{font-variant-numeric:tabular-nums;white-space:nowrap}footer{margin-top:28px;font-size:.9rem}@media(max-width:650px){th:nth-child(4),td:nth-child(4){display:none}th,td{padding:11px 8px}}`;
+            const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>GitHub AI 工具热榜 · ${today}</title><style>${style}</style></head><body><main><a class="back" href="./">← GitHub AI 报告</a><h1>GitHub AI 工具热榜</h1><p class="meta">数据日期：${today} · 筛选口径：GitHub 公开仓库，带 <code>ai</code> Topic，近 30 天有更新，按 Stars 排序。</p><table><thead><tr><th>#</th><th>项目</th><th>Stars</th><th>Forks</th><th>简介</th></tr></thead><tbody>${rows}</tbody></table><footer>数据源：GitHub Search API。Stars 为抓取时快照，不构成投资建议。</footer></main></body></html>`;
+            const reportDir = path.join(process.env.GITHUB_WORKSPACE, "reports", "github-ai");
+            fs.writeFileSync(path.join(reportDir, `${today}.html`), html);
+            const reports = fs.readdirSync(reportDir)
+              .filter((file) => /^\d{4}-\d{2}-\d{2}\.html$/.test(file))
+              .sort().reverse()
+              .map((file) => `<a class="report" href="${file}"><h2>${file.slice(0, 10)} · GitHub AI 工具热榜</h2><p>基于 GitHub 公开数据的近期活跃 AI 项目 Stars 排行。</p></a>`).join("");
+            const index = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>GitHub AI · AI Reports</title><style>body{max-width:760px;margin:0 auto;padding:56px 24px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172033;line-height:1.7}a{color:#2563eb}p{color:#536076}.report{display:block;border:1px solid #dbe2ef;border-radius:12px;padding:18px;text-decoration:none;color:inherit;margin-top:24px}.report:hover{border-color:#93c5fd;background:#f8fbff}h2{margin:0 0 6px}</style></head><body><a href="../../">← AI Reports 首页</a><h1>GitHub AI</h1><p>热门 AI 工具、开源项目与趋势追踪。</p>${reports}</body></html>`;
+            fs.writeFileSync(path.join(reportDir, "index.html"), index);
+            core.setOutput("report_path", `reports/github-ai/${today}.html`);
+
+      - name: Commit generated report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add reports/github-ai
+          if git diff --cached --quiet; then
+            echo "No report changes to commit."
+          else
+            git commit -m "report: GitHub AI hot list for $(TZ=Asia/Shanghai date +%F)"
+            git push
+          fi
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+      - name: Upload site artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
